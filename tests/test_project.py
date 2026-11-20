@@ -1,5 +1,7 @@
 """Tests for the read-only project file helpers."""
 
+from pathlib import Path
+
 import pytest
 
 from diamond_mcp import project as prj
@@ -118,3 +120,40 @@ def test_newest_artifacts_filters_by_time_and_suffix(tmp_path):
     (tmp_path / "ignored.txt").write_text("x")
     found = prj.newest_artifacts(str(tmp_path), (".bit",), time.time() - 60)
     assert found == [str(new)]
+
+
+def _write_recovery(folder, title):
+    (folder / ".recovery").write_text(f'<BaliProject version="3.2" title="{title}" device="D"/>')
+
+
+def test_set_aside_stale_recovery_without_recovery_file(ldf_project):
+    assert prj.set_aside_stale_recovery(str(ldf_project), "proj") is None
+
+
+def test_set_aside_stale_recovery_leaves_same_project_alone(ldf_project):
+    _write_recovery(ldf_project.parent, "proj")
+    assert prj.set_aside_stale_recovery(str(ldf_project), "proj") is None
+    assert (ldf_project.parent / ".recovery").is_file()
+
+
+def test_set_aside_stale_recovery_renames_other_project(ldf_project):
+    _write_recovery(ldf_project.parent, "sibling")
+    result = prj.set_aside_stale_recovery(str(ldf_project), "proj")
+    assert result["recovery_title"] == "sibling"
+    assert result["error"] is None
+    assert not (ldf_project.parent / ".recovery").exists()
+    assert Path(result["moved_to"]).is_file()
+
+
+def test_set_aside_stale_recovery_never_overwrites_an_earlier_one(ldf_project):
+    for _ in range(2):
+        _write_recovery(ldf_project.parent, "sibling")
+        assert prj.set_aside_stale_recovery(str(ldf_project), "proj")["moved_to"]
+    assert len(list(ldf_project.parent.glob(".recovery.stale-*"))) == 2
+
+
+def test_set_aside_stale_recovery_moves_unreadable_file(ldf_project):
+    (ldf_project.parent / ".recovery").write_text("not xml")
+    result = prj.set_aside_stale_recovery(str(ldf_project), "proj")
+    assert result["recovery_title"] is None
+    assert result["moved_to"]

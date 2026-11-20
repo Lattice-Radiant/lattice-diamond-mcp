@@ -553,12 +553,25 @@ def open_project(project_path: str, implementation: Optional[str] = None) -> dic
         _session, note = _ensure_no_project()
     except SessionError as exc:
         return _error_dict(str(exc))
+    stale = prj.set_aside_stale_recovery(path, info["title"])
     lines = [f"cd {tcl_quote(str(Path(path).parent))}", f"prj_project open {tcl_quote(path)}"]
     if implementation:
         lines.append(f"prj_impl active {tcl_quote(implementation)}")
     response = _run("\n".join(lines))
     if note:
         response["session_note"] = note
+    if stale:
+        if stale["moved_to"]:
+            warning = (
+                f"A Diamond recovery file for another project ({stale['recovery_title'] or 'unreadable'}) was in the "
+                f"project folder and would have made Diamond open that project instead. It was renamed to {stale['moved_to']}."
+            )
+        else:
+            warning = (
+                f"A Diamond recovery file for another project ({stale['recovery_title'] or 'unreadable'}) is in the "
+                f"project folder and could not be moved ({stale['error']}); Diamond may open that project instead."
+            )
+        response["warnings"] = response.get("warnings", []) + [warning]
 
     preflight = {"device": info["device"], "missing_files": missing}
     if response["success"]:

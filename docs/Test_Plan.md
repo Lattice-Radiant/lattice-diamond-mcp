@@ -13,6 +13,7 @@ In scope:
 - Security hardening of the server (file confinement, program restriction, stdio-only transport, XML entity refusal).
 - The packaging and installer scripts, including the embedded Windows and Linux packages and the combined package.
 - The security scan tooling in `security_scan/`.
+- Compilation of real Diamond projects from the adjacent `design-migration` repository through the server's tools (Section 3.9).
 
 Out of scope:
 
@@ -31,6 +32,7 @@ Internal policy: no company policy document or policy number is referenced by th
 | Packaging and installer | `tests/test_installer.py`, `test_embedded.py`, `test_linux_embedded.py`, `test_combine.py`, `test_create_export.py`, `test_packaging.py` | As above; some build steps use local fixtures | Yes, except one test that downloads wheels |
 | Security scans | `security_scan/run_scans.py`, `tests/test_security_scan.py` | `bandit==1.9.4`, network for OSV | Scans run separately; scanner tests run by default |
 | Integration, real Diamond | `tests/test_integration.py` | Diamond installation, licence, `DIAMOND_TEST_LDF` | No, skipped unless configured |
+| Design-based, real Diamond 3.14 | `scripts/run_design_tests.py` | Diamond 3.14, licence, `design-migration` checkout | No, run manually |
 | Installed-package smoke test | `scripts/smoke_test.py` in `.github/workflows/build-dist.yml` | A built package on its target OS | CI only |
 
 ## 3. Test Items and Coverage
@@ -44,6 +46,7 @@ Internal policy: no company policy document or policy number is referenced by th
 - Report tools: listing, summaries, pagination, refusal of other file types.
 - Environment and configuration tools.
 - Refusal of `prj_project close` through `run_tcl`, and the absence of look-alike false refusals.
+- Stale crash-recovery file: `open_project` renames a `.recovery` file that names another project (so Diamond does not restore that project in place of the requested one), reports a warning, leaves a `.recovery` that names the same project, and adds no warning when there is no such file.
 
 ### 3.2 Session protocol (`test_session.py`)
 
@@ -57,6 +60,7 @@ Internal policy: no company policy document or policy number is referenced by th
 
 - PAR, TWR and MRP parsing on trimmed real Diamond 3.14 reports (`tests/data`), including unconstrained, setup-only, wrapped-name and malformed cases, and linear-time behaviour on crafted input.
 - `.ldf` parsing, missing-source detection (including letter-case mismatches), report-file location.
+- `set_aside_stale_recovery`: no file, same project (left alone), other project (renamed to `.recovery.stale-<timestamp>`, not deleted), repeated renames that never overwrite an earlier file, and an unreadable file.
 - Discovery of Diamond installations; configuration precedence (environment, file, auto-detection); the licence value is never leaked; a working-directory config file is not read.
 
 ### 3.4 Audit log (`test_audit.py`)
@@ -93,18 +97,77 @@ Internal policy: no company policy document or policy number is referenced by th
 
 - Environment readiness, a full compile, repeated open and close cycles, and failure reporting with the session surviving.
 
+### 3.9 Design-based testing with Diamond 3.14 (`scripts/run_design_tests.py`)
+
+Purpose: exercise the server's `compile_project` tool (open, Synthesis, Translate, Map, PAR, Bitgen, then timing and resource summaries) on real customer and primitive-test designs, using Diamond 3.14.0.75.0.
+
+Design inventory (`design-migration` checkout, counted by the script from the device in each `.ldf`; projects under `tests/fixtures` are excluded as they are inputs of the migration tool):
+
+| Family | Devices | Projects | Location |
+|---|---|---|---|
+| XO2 | LCMXO2 | 12 | `perforce/regtest/diamondng/trunk/benchmark/customer_Mach_XO4` |
+| XO3 | LCMXO3L, LCMXO3LF, LAMXO3LF | 35 | same |
+| XO3D | LCMXO3D | 182 | `xo3d_primitive_tests` |
+| Other (opt-in) | LCMXO256C, LFE3, LFE5U, LFXP2, LPTM | 10 | same as XO2 and XO3 |
+| Total in scope (XO2, XO3, XO3D) | | 229 | |
+
+Note on the inventory: the `perforce` tree holds 57 `.ldf` projects in 41 design folders, not 43. The 57 comprise 12 XO2, 35 XO3 and 10 of other families. The XO3D designs are not in that tree; they are in `xo3d_primitive_tests`. Several design folders hold more than one project (`rd1005_XO4` holds 15), which is why projects outnumber folders.
+
+Method:
+
+- Each design is copied to a scratch folder (the closest folder holding the `.ldf` and every relative source it names), so the originals are never modified.
+- Each design gets a fresh session and one `compile_project` call with a per-stage timeout (default 1200 s). Designs run one at a time, so one licence seat suffices.
+- Verdict: PASS when every stage completes. Whether the design's own timing constraints were met is reported separately and does not fail the design, because the purpose is to test the server and not the designs.
+- Output: `summary.md` (for pasting into the test summary) and `results.json` (per-stage status, PAR and timing results, resources, error text for failures).
+- Exit status is 1 if any design failed.
+
+Usage:
+
+- `python scripts/run_design_tests.py --list` lists what would run.
+- `--family xo2|xo3|xo3d|other|all` (repeatable) and `--select TEXT` (repeatable, case-insensitive on the path) choose designs; `--limit N` caps the count.
+- `--diamond-version` (default 3.14), `--timeout`, `--no-bitstream`, `--out`, `--keep-work` adjust the run.
+- A licence must resolve in the environment. If it comes from `~/.flexlmrc` only, set `LM_LICENSE_FILE` before running the pytest integration tests, because those tests replace `HOME` with an empty folder.
+
+Acceptance: every in-scope design that the installed Diamond supports completes the flow. A failure is triaged as a server defect, a Diamond or licence limitation, or a design problem, and recorded in the summary.
+
 ## 4. Environment
 
 - Python 3.11 or later (the project requires `>=3.11`; the installer path itself runs on 3.8 or later).
 - Dependencies from `uv.lock`: `uv sync --extra test`.
 - `tclsh` 8.5 or later. Tests that need it are skipped with a reason if it is absent.
-- For integration tests: a Diamond installation, `LM_LICENSE_FILE` if the site needs it, and a small compilable project (`DIAMOND_TEST_LDF`, optionally `DIAMOND_TEST_ROOT`).
+- For integration and design tests: a Diamond installation (3.14.0.75.0 used), `LM_LICENSE_FILE` if the site needs it (required when the licence is configured only in `~/.flexlmrc`), and a small compilable project (`DIAMOND_TEST_LDF`, optionally `DIAMOND_TEST_ROOT`).
 - For the wheel-download installer test: `DIAMOND_TEST_INSTALLER=1` and network access.
+
+### 4.1 Diamond installation and licensing used for design testing
+
+Reference configuration supplied for the design tests (Linux):
+
+| Item | Value |
+|---|---|
+| Diamond installation (version 3.14, build 3_14p.156) | `/home/rel2/3_14p.156/rtf` |
+| Console program | `/home/rel2/3_14p.156/rtf/bin/lin64/diamondc` |
+| `LM_LICENSE_FILE` | `1850@ldc-virtlic02` |
+| `SALT_LICENSE_SERVER` | `1717@lrd-virtlic-rh8-01:1717@lrd-virtlic-ha-01a:1717@lrd-virtlic-ha-01b` |
+
+- Set `DIAMOND_EXE` to the console program and export both licence variables in the environment of the server process (or of `scripts/run_design_tests.py`).
+- This installation is a different build from the 3.14.0.75.0 installation used for the pilot run recorded in Test_Summary.md. A run on this build must state its build in the summary.
+- The licence servers are internal to the company network; the hosts are reachable only from it.
+
+### 4.2 Installing the package for design testing (Linux)
+
+Package: `dist/lattice-diamond-mcp-0.1.0-embedded-linux-x86_64.zip`, built from the working tree on 2026-11-20 (it includes uncommitted changes; rebuild with `--ref` for a release). Its SHA-256 is in the `.sha256` file beside it. Build check passed: installed with `install.py`, manifest verified, server answered over MCP (32 tools).
+
+- Unzip, then run `python3 install.py --diamond-exe /home/rel2/3_14p.156/rtf/bin/lin64/diamondc` from the unzipped folder. It installs the bundled Python under `~/.local/share/lattice-diamond-mcp/python` and registers the server with Claude Code (user scope).
+- Add `--name <other-name>` to keep an existing registration; the default name replaces an earlier one registered by the installer.
+- Export `LM_LICENSE_FILE` and `SALT_LICENSE_SERVER` (Section 4.1) in the shell that starts Claude Code, or register them with `claude mcp add -e`. The installer does not store licence variables.
+- Restart Claude Code, then ask it to run `check_environment`.
+- The package holds the server only. `scripts/run_design_tests.py` is in the repository, not in the package.
 
 ## 5. Execution
 
 - Unit and component tests: `pytest`.
 - Integration tests: `pytest -m integration` with the variables in Section 4.
+- Design tests: `python scripts/run_design_tests.py` (Section 3.9).
 - Security scans: `python security_scan/run_scans.py` (`--skip-osv` without network, `--skip-dast` to omit dynamic probes).
 - CI: `.github/workflows/security-scan.yml` runs the unit tests and the scans on every push to main, every pull request and weekly. `.github/workflows/build-dist.yml` builds each package and runs the install test and `scripts/smoke_test.py` on the target operating system.
 
@@ -123,8 +186,9 @@ Exit (acceptance for a release):
 
 ## 7. Known Gaps and Risks
 
-- Integration tests need a licensed Diamond and are not run in CI. Behaviour against real Diamond rests on manual runs and on the fake console reproducing recorded behaviour.
+- Integration and design tests need a licensed Diamond and are not run in CI. Behaviour against real Diamond rests on manual runs and on the fake console reproducing recorded behaviour.
 - The wheel-download installer test is opt-in and not part of the default run.
 - Windows packaging steps are exercised in CI only; they were not executed on Linux in the summarised run.
+- The fake console does not reproduce Diamond's recovery behaviour, so the stale `.recovery` tests check the server's file handling only. That Diamond then opens the requested project was verified by hand on real Diamond 3.14.0.75.0 (Test_Summary.md Section 6.3); an integration test with two projects in one folder is still advisable.
 - No coverage measurement is configured, so statement coverage is unknown.
 - No performance or load testing is defined beyond timeout and crafted-input checks.

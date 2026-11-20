@@ -403,3 +403,25 @@ def test_check_environment_ready_with_fake_exe(monkeypatch, fake_exe):
 def test_configure_diamond_validates_input(tmp_path):
     assert not server.configure_diamond()["success"]
     assert "not found" in server.configure_diamond(diamond_exe=str(tmp_path / "diamondc"))["output"]
+
+
+def test_open_project_sets_aside_a_recovery_file_of_another_project(server_session, ldf_project):
+    (ldf_project.parent / ".recovery").write_text('<BaliProject title="sibling" device="D"/>')
+    result = server.open_project(str(ldf_project))
+    assert result["success"], result
+    assert not (ldf_project.parent / ".recovery").exists()
+    assert len(list(ldf_project.parent.glob(".recovery.stale-*"))) == 1
+    assert any("recovery file" in w and "sibling" in w for w in result["warnings"])
+
+
+def test_open_project_leaves_a_recovery_file_of_the_same_project(server_session, ldf_project):
+    (ldf_project.parent / ".recovery").write_text('<BaliProject title="proj" device="D"/>')
+    result = server.open_project(str(ldf_project))
+    assert result["success"], result
+    assert (ldf_project.parent / ".recovery").is_file()
+    assert not any("recovery file" in w for w in result.get("warnings", []))
+
+
+def test_open_project_without_a_recovery_file_has_no_recovery_warning(server_session, ldf_project):
+    result = server.open_project(str(ldf_project))
+    assert not any("recovery file" in w for w in result.get("warnings", []))

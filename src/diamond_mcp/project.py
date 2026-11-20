@@ -14,6 +14,7 @@ only after synthesis has started.
 from __future__ import annotations
 
 import os
+import time
 # _load refuses any DTD or entity (_refuse_dtd) before a file is parsed, so Bandit's XML warnings do not apply.
 import xml.etree.ElementTree as ET  # nosec B405
 from pathlib import Path
@@ -76,6 +77,37 @@ def _load(path: str) -> ET.Element:
     if root.tag != "BaliProject":
         raise ProjectFileError(f"Not a Diamond project (root element is <{root.tag}>): {path}")
     return root
+
+
+def set_aside_stale_recovery(ldf_path: str, title: str) -> Optional[dict]:
+    """
+    Rename a `.recovery` file in the project folder that does not belong to the project about to be opened.
+
+    The server restarts the Diamond console instead of closing a project, so Diamond leaves its crash-recovery
+    file behind. When the folder holds several projects, Diamond restores the project named in that file instead
+    of the one requested. The file is renamed, not deleted, so unsaved work in it is kept. Returns None when
+    nothing was done, otherwise {"recovery_title", "moved_to", "error"}.
+    """
+    recovery = Path(ldf_path).parent / ".recovery"
+    if not recovery.is_file():
+        return None
+    try:
+        recovered: Optional[str] = _load(str(recovery)).get("title", "")
+    except ProjectFileError:
+        recovered = None
+    if recovered == title:
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = recovery.with_name(f".recovery.stale-{stamp}")
+    counter = 1
+    while target.exists():
+        counter += 1
+        target = recovery.with_name(f".recovery.stale-{stamp}-{counter}")
+    try:
+        recovery.rename(target)
+    except OSError as exc:
+        return {"recovery_title": recovered, "moved_to": None, "error": str(exc)}
+    return {"recovery_title": recovered, "moved_to": str(target), "error": None}
 
 
 def _options(element: Optional[ET.Element]) -> dict[str, str]:
