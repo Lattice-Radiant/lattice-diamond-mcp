@@ -121,6 +121,8 @@ Method:
 - Output: `summary.md` (for pasting into the test summary) and `results.json` (per-stage status, PAR and timing results, resources, error text for failures).
 - Exit status is 1 if any design failed.
 
+Repaired-project experiment (Test_Summary.md Section 6.4): the 15 projects refused by the pre-flight check were repaired by hand in a scratch copy (links for letter-case and stale strategy names) and compiled with `compile_project`. Method for repeating it: repair only the scratch copy, never the originals or the server; use `force=true`; record per project whether the server reported success and whether the output file exists, because the two differ for JEDEC devices (xp2) and for a failing host library (lptm, xo).
+
 Usage:
 
 - `python scripts/run_design_tests.py --list` lists what would run.
@@ -190,5 +192,7 @@ Exit (acceptance for a release):
 - The wheel-download installer test is opt-in and not part of the default run.
 - Windows packaging steps are exercised in CI only; they were not executed on Linux in the summarised run.
 - The fake console does not reproduce Diamond's recovery behaviour, so the stale `.recovery` tests check the server's file handling only. That Diamond then opens the requested project was verified by hand on real Diamond 3.14.0.75.0 (Test_Summary.md Section 6.3); an integration test with two projects in one folder is still advisable.
+- Bitgen result check: the server expects a `.bit`; for xp2 devices Bitgen writes a `.jed`, so a good build is reported as a failure (Test_Summary.md Section 6.4). No test covers it yet. A fix should accept `.jed` and add a test with a fake Bitgen that writes only a `.jed`.
+- Host prerequisite: Diamond's `.bit` to `.jed` conversion (`ddtcmain`) needs `libusb-0.1.so.4`. Without it, Bitgen is reported as failed for lptm and xo devices although the `.bit` exists. Add the library to the host check before design runs.
 - No coverage measurement is configured, so statement coverage is unknown.
 - No performance or load testing is defined beyond timeout and crafted-input checks.

@@ -145,6 +145,25 @@ Method: the project files, the folders, the server source and the audit log were
 | A (case mismatch) | Diagnosis, hints and an optional documented remedy in the hint text: already done and correct. | Automatically renaming files or creating links in a user's source tree. The server would change customer files without consent and could hide a real portability defect. Repair belongs to the design owner or a separate, opt-in migration tool (for example the design-migration workflow). |
 | B (stale strategy name) | Adding a hint that names the closest file in the folder (for example `xo3l_verilog1.sty`), as already done for case differences. | Choosing and substituting a strategy file: this changes the synthesis options and needs a decision by the design owner. |
 
+### 6.4 Experiment: the 15 refused projects, repaired outside the server and compiled through it
+
+Purpose: to show that, once the project-data defects are repaired, the server can run these projects. The repairs were made by hand in the scratch copy under `design-migration/dist` (case-correcting links for the 9 differing VHDL sources, and links from the stale strategy names to the existing `.sty` files); the Perforce originals and the server were not changed. Each project was then compiled once with the source-tree server's `compile_project` tool, `force=true`, one fresh call per project.
+
+- Pre-flight: all 15 passed (0 blocking missing files).
+- Result: 7 of 15 compiled end to end with a bitstream; 8 of 15 were reported as a Bitgen failure. In all 8, the flow had reached PAR, and Bitgen wrote its output file. None failed in synthesis, translate, map or PAR.
+
+| Group | Projects | Server result | Output file | Cause |
+|---|---|---|---|---|
+| Compiled | `SDFlashControllerUsingSDBus` (xo3l_verilog), `Simple_Sigma_Delta` (xo2_verilog), `SPISerialPeripheralInterfaceWISHBONEController` (xo3l_verilog), rd1005 `ecp3` (2), `ecp5` (2), `xo2` (2) | Success, 45 s to 60 s each | `.bit` | None |
+| lptm, xo (4 projects) | rd1005 `lptm` and `xo`, Verilog and VHDL | Bitgen failed | `.bit` written (20,218 and 9,224 bytes for the Verilog projects) | After the `.bit` is written, Diamond runs `ddtcmd` to convert it to `.jed`; `ddtcmain` fails with `libusb-0.1.so.4: cannot open shared object file`. This is a missing system library on this host. |
+| xp2 (2 projects) | rd1005 `xp2`, Verilog and VHDL | Bitgen failed | `.jed` written (about 1.25 MB) | Bitgen succeeded but writes a JEDEC file, not a `.bit`. The server's check expects a `.bit`, so it reports "Bitgen returned success but no .bit file was written". |
+
+Assessment:
+- xp2 is a server defect (a false failure). The result check should also accept `.jed` for devices whose bitstream is a JEDEC file. This is within the scope of the server. It was not fixed in this experiment.
+- lptm and xo: the server reported the failure correctly, because Diamond itself reported the milestone as failed. The cause is host setup (install the 32-bit/compat `libusb-0.1` package, or ignore the `.jed` conversion), which is beyond the scope of the server. The `.bit` file was produced.
+- Conclusion for the experiment: with the project data repaired, the server ran all 15 projects through PAR without any server error. 7 completed fully, and the other 8 each wrote their output file before the failure described above. For the strict criterion "reports success", 7 of 15 passed; for "output produced", 15 of 15.
+- Timing was not collected for these runs, and the repairs are manual. Not covered: the other 56 designs were not re-run with the `.recovery` fix.
+
 ## 7. Slowest Tests
 
 - `test_a_real_process_started_from_the_folder_is_found_and_stopped`: 5.0 s
@@ -157,6 +176,8 @@ Method: the project files, the folders, the server source and the audit log were
   - Wrong implementation built (`I2SControllerwithWISHBONEInterface_vhdl_XO4/project/xo3l/verilog/xo3l_verilog_syn.ldf`): the cause is now established and the finding is a server defect (Section 6.3, item C). The server restarts the Diamond console instead of closing the project; the `.recovery` file left in the folder made Diamond reopen the sibling `lse` project. With the stale file moved aside the project compiled correctly. Recommended change: detect and set aside a stale `.recovery` before opening, and verify the opened project title.
   - Letter-case and missing-file refusals (15 projects): the pre-flight check works as intended and is correct. The causes are project-data defects (12 letter-case, 3 stale strategy file names). Fixes were verified on 4 of the 15 (Section 6.3); repairing them is beyond the scope of the server, except for a closer hint for the strategy file case.
   - Long PAR: `A3_XO4/top` took 24.7 minutes; the background and notification path worked.
+  - Bitgen result check (Section 6.4): for devices whose bitstream is a JEDEC file (xp2), the server reports a false failure because it looks only for `.bit`. Recommended fix, within scope: accept `.jed`.
+  - Host library: `libusb-0.1.so.4` is missing on this host, which makes Diamond's `.bit` to `.jed` conversion fail for the lptm and xo devices (Section 6.4). Not a server defect.
 - The default `python3` on this host is 3.8.5, which does not meet the `>=3.11` requirement; the run used `python3.11` in an isolated environment.
 - Windows packaging steps and the installed-package smoke tests run in CI on the target systems and were not executed here.
 - Coverage was not measured.
