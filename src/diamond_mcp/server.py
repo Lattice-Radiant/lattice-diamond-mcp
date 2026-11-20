@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from . import project as prj
 from . import reports
@@ -161,27 +162,42 @@ mcp = FastMCP(
 )
 
 
-def _tool(fn):
+# MCP tool hints (ToolAnnotations) and titles, per MCP_Req_Radiant_integration.md.
+# Every tool declares all four hints. This server runs the Diamond console locally,
+# so openWorldHint is False except for run_tcl, which can run anything.
+READ_LOCAL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+WRITE_ADDITIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+WRITE_SETTING = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+CHANGE_LOCAL = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+RUN_LOCAL = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+RUN_ANYTHING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+
+
+def _tool(title: str, annotations: ToolAnnotations):
     """
-    Register fn as an MCP tool that runs in a worker thread.
+    Register a function as an MCP tool that runs in a worker thread, with its
+    human-readable title and its four MCP tool hints.
 
     Flow stages can run for minutes; running them on the event loop would block
     the whole server. The plain function is returned so tests can call it directly.
     """
 
-    @functools.wraps(fn)
-    async def _async_tool(*args, **kwargs):
-        token = current_tool.set(fn.__name__)
-        try:
-            return await asyncio.to_thread(fn, *args, **kwargs)
-        except Exception as exc:  # last-resort guard so a tool never raises into MCP
-            logger.exception("Tool %s failed", fn.__name__)
-            return _error_dict(f"{fn.__name__} failed: {exc}")
-        finally:
-            current_tool.reset(token)
+    def register(fn):
+        @functools.wraps(fn)
+        async def _async_tool(*args, **kwargs):
+            token = current_tool.set(fn.__name__)
+            try:
+                return await asyncio.to_thread(fn, *args, **kwargs)
+            except Exception as exc:  # last-resort guard so a tool never raises into MCP
+                logger.exception("Tool %s failed", fn.__name__)
+                return _error_dict(f"{fn.__name__} failed: {exc}")
+            finally:
+                current_tool.reset(token)
 
-    mcp.tool()(_async_tool)
-    return fn
+        mcp.tool(title=title, annotations=annotations)(_async_tool)
+        return fn
+
+    return register
 
 
 # =============================================================================
@@ -388,7 +404,7 @@ def _read_window(path: Path, offset: int, limit: int, tail: bool) -> tuple[str, 
 # SESSION MANAGEMENT TOOLS
 # =============================================================================
 
-@_tool
+@_tool(title="Start Diamond session", annotations=WRITE_SETTING)
 def start_diamond(exe_path: Optional[str] = None, timeout: Optional[float] = None) -> dict:
     """
     Start the Diamond Tcl console. Idempotent - a no-op when already running. Tools start it automatically, so this is only needed to pick a specific installation or timeout.
@@ -413,13 +429,13 @@ def start_diamond(exe_path: Optional[str] = None, timeout: Optional[float] = Non
     return _result_to_dict(result, diamond_version=session.diamond_version)
 
 
-@_tool
+@_tool(title="Stop Diamond session", annotations=CHANGE_LOCAL)
 def stop_diamond() -> dict:
     """Stop the Diamond Tcl console gracefully (force-kill after 10 seconds). Open projects are closed without saving."""
     return _result_to_dict(_get_session().stop())
 
 
-@_tool
+@_tool(title="Show Diamond session status", annotations=READ_LOCAL)
 def get_session_status(log_lines: int = 50) -> dict:
     """
     Return session health: is_running, diamond_version, current_project, commands_run, errors, last_exit (why a previous console died) and the console log tail.
@@ -431,7 +447,7 @@ def get_session_status(log_lines: int = 50) -> dict:
     return _ok_dict("Session status.", **stats)
 
 
-@_tool
+@_tool(title="Find Diamond installations", annotations=READ_LOCAL)
 def detect_diamond_installations() -> dict:
     """List Diamond installations found on this machine, newest first. Use the diamond_exe of an entry with configure_diamond."""
     installs = installations_to_dicts(discover_diamond_installations())
@@ -439,13 +455,13 @@ def detect_diamond_installations() -> dict:
     return _ok_dict(message, installations=installs)
 
 
-@_tool
+@_tool(title="Show Diamond configuration", annotations=READ_LOCAL)
 def get_diamond_config() -> dict:
     """Show the resolved Diamond executable, where it came from, whether a license is configured, and the config file search order."""
     return _ok_dict("Diamond configuration.", **get_config_info())
 
 
-@_tool
+@_tool(title="Configure Diamond installation", annotations=WRITE_SETTING)
 def configure_diamond(
     diamond_exe: Optional[str] = None,
     lm_license_file: Optional[str] = None,
@@ -470,7 +486,7 @@ def configure_diamond(
     return _ok_dict(f"Saved configuration to {target}.{note}", config_file=str(target))
 
 
-@_tool
+@_tool(title="Check Diamond environment", annotations=READ_LOCAL)
 def check_environment() -> dict:
     """Check that Diamond can be started: executable resolved and present, license configured, version. Run this first when something fails to start."""
     resolved = resolve_diamond_path()
@@ -532,7 +548,7 @@ def check_environment() -> dict:
 # PROJECT TOOLS
 # =============================================================================
 
-@_tool
+@_tool(title="Open Diamond project", annotations=CHANGE_LOCAL)
 def open_project(project_path: str, implementation: Optional[str] = None) -> dict:
     """
     Open a Diamond project (.ldf). Any project that is already open is closed first (unsaved changes are lost). Checks the project file first and reports missing source files (including letter-case mismatches) under 'preflight'.
@@ -590,7 +606,7 @@ def open_project(project_path: str, implementation: Optional[str] = None) -> dic
     return response
 
 
-@_tool
+@_tool(title="Close Diamond project", annotations=CHANGE_LOCAL)
 def close_project() -> dict:
     """Close the currently open project WITHOUT saving (call save_project first to keep changes). Implemented by restarting the Diamond console, because Diamond's own close command intermittently crashes it."""
     session = _get_session()
@@ -607,7 +623,7 @@ def close_project() -> dict:
     )
 
 
-@_tool
+@_tool(title="Create Diamond project", annotations=WRITE_ADDITIVE)
 def create_project(
     name: str,
     directory: str,
@@ -653,13 +669,13 @@ def create_project(
     return response
 
 
-@_tool
+@_tool(title="Save Diamond project", annotations=CHANGE_LOCAL)
 def save_project() -> dict:
     """Save the currently open project."""
     return _run("prj_project save")
 
 
-@_tool
+@_tool(title="Show Diamond project details", annotations=READ_LOCAL)
 def get_project_info(project_path: Optional[str] = None) -> dict:
     """
     Describe a project from its .ldf file (no Diamond session needed): device, implementations with synthesis tool, top module and sources, strategies, which reports exist, and any missing source files.
@@ -696,7 +712,7 @@ def _resolve_files(files: list[str]) -> list[str]:
     return resolved
 
 
-@_tool
+@_tool(title="Add Diamond project sources", annotations=WRITE_ADDITIVE)
 def add_sources(
     files: list[str],
     implementation: Optional[str] = None,
@@ -735,7 +751,7 @@ def add_sources(
     return _run(command)
 
 
-@_tool
+@_tool(title="Remove Diamond project sources", annotations=CHANGE_LOCAL)
 def remove_sources(
     files: Optional[list[str]] = None,
     implementation: Optional[str] = None,
@@ -756,7 +772,7 @@ def remove_sources(
     return _run(command)
 
 
-@_tool
+@_tool(title="Change Diamond target device", annotations=WRITE_SETTING)
 def set_target_device(part: str) -> dict:
     """
     Change the target device of the open project and return the resulting device information.
@@ -767,7 +783,7 @@ def set_target_device(part: str) -> dict:
     return _run(f"prj_dev set -part {tcl_quote(part)}\nprj_dev")
 
 
-@_tool
+@_tool(title="Choose Diamond synthesis tool", annotations=WRITE_SETTING)
 def set_synthesis_tool(tool: str, implementation: Optional[str] = None) -> dict:
     """
     Set the synthesis tool for an implementation of the open project.
@@ -781,7 +797,7 @@ def set_synthesis_tool(tool: str, implementation: Optional[str] = None) -> dict:
     return _run(f"prj_syn set {tool}{_impl_arg(implementation)}\nprj_syn")
 
 
-@_tool
+@_tool(title="Show Diamond strategy option", annotations=READ_LOCAL)
 def get_strategy_option(name: str, strategy: Optional[str] = None) -> dict:
     """
     Read one strategy option, for example PROP_MAP_RegRetiming.
@@ -796,7 +812,7 @@ def get_strategy_option(name: str, strategy: Optional[str] = None) -> dict:
     return _run(f"{option} {tcl_quote(name)}")
 
 
-@_tool
+@_tool(title="Set Diamond strategy option", annotations=WRITE_SETTING)
 def set_strategy_option(name: str, value: str, strategy: Optional[str] = None) -> dict:
     """
     Set one strategy option and return its new value.
@@ -845,7 +861,7 @@ def _run_flow_impl(
     return _run(command, timeout=timeout)
 
 
-@_tool
+@_tool(title="Run Diamond flow stage", annotations=RUN_LOCAL)
 def run_flow(
     milestone: str,
     task: Optional[str] = None,
@@ -866,7 +882,7 @@ def run_flow(
     return _run_flow_impl(milestone, task, implementation, force, timeout)
 
 
-@_tool
+@_tool(title="Synthesize Diamond design", annotations=RUN_LOCAL)
 def run_synthesis(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run the Synthesis stage (Synplify, LSE or Precision, per the project) on the open project.
@@ -878,7 +894,7 @@ def run_synthesis(implementation: Optional[str] = None, force: str = "none") -> 
     return _run_flow_impl("Synthesis", None, implementation, force, None)
 
 
-@_tool
+@_tool(title="Translate Diamond design", annotations=RUN_LOCAL)
 def run_translate(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run the Translate stage (netlist to NGD) on the open project.
@@ -890,7 +906,7 @@ def run_translate(implementation: Optional[str] = None, force: str = "none") -> 
     return _run_flow_impl("Translate", None, implementation, force, None)
 
 
-@_tool
+@_tool(title="Map Diamond design", annotations=RUN_LOCAL)
 def run_map(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run the Map stage on the open project.
@@ -902,7 +918,7 @@ def run_map(implementation: Optional[str] = None, force: str = "none") -> dict:
     return _run_flow_impl("Map", None, implementation, force, None)
 
 
-@_tool
+@_tool(title="Place & route Diamond design", annotations=RUN_LOCAL)
 def run_par(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run Place and Route on the open project. Produces the .par and .twr reports.
@@ -914,7 +930,7 @@ def run_par(implementation: Optional[str] = None, force: str = "none") -> dict:
     return _run_flow_impl("PAR", None, implementation, force, None)
 
 
-@_tool
+@_tool(title="Run Diamond timing analysis", annotations=RUN_LOCAL)
 def run_timing_analysis(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run Place and Route Trace (timing analysis) and return the parsed timing summary.
@@ -929,7 +945,7 @@ def run_timing_analysis(implementation: Optional[str] = None, force: str = "none
     return response
 
 
-@_tool
+@_tool(title="Run Diamond export stage", annotations=RUN_LOCAL)
 def run_export(implementation: Optional[str] = None, force: str = "none") -> dict:
     """
     Run the Export milestone. With default strategy settings this does NOT write a bitstream or JEDEC file; use generate_bitstream for that.
@@ -941,7 +957,7 @@ def run_export(implementation: Optional[str] = None, force: str = "none") -> dic
     return _run_flow_impl("Export", None, implementation, force, None)
 
 
-@_tool
+@_tool(title="Generate Diamond bitstream file", annotations=RUN_LOCAL)
 def generate_bitstream(
     implementation: Optional[str] = None, force: str = "none", timeout: Optional[float] = None
 ) -> dict:
@@ -997,7 +1013,7 @@ def _timing_summary(path: str, implementation: Optional[str]) -> dict:
     return summary
 
 
-@_tool
+@_tool(title="Compile Diamond project", annotations=RUN_LOCAL)
 def compile_project(
     project_path: str,
     implementation: Optional[str] = None,
@@ -1070,7 +1086,7 @@ def _resources(path: str, implementation: Optional[str]) -> dict:
     return reports.parse_mrp(_read_text(files["mrp"]))
 
 
-@_tool
+@_tool(title="List Diamond reports", annotations=READ_LOCAL)
 def list_reports(project_path: Optional[str] = None, implementation: Optional[str] = None) -> dict:
     """
     List the report and output files that exist for an implementation (srr, mrp, par, twr, pad, bit, ...).
@@ -1089,7 +1105,7 @@ def list_reports(project_path: Optional[str] = None, implementation: Optional[st
     return _ok_dict(f"{len(files)} report file(s) found.", reports=files)
 
 
-@_tool
+@_tool(title="Report Diamond timing", annotations=READ_LOCAL)
 def get_timing_summary(project_path: Optional[str] = None, implementation: Optional[str] = None) -> dict:
     """
     Summarise timing from the PAR and timing reports: setup/hold errors and scores, worst slack, constraint versus achieved frequency, and whether all preferences were met.
@@ -1110,7 +1126,7 @@ def get_timing_summary(project_path: Optional[str] = None, implementation: Optio
     return _ok_dict("Timing summary.", timing=summary)
 
 
-@_tool
+@_tool(title="Report Diamond resource usage", annotations=READ_LOCAL)
 def get_resource_usage(project_path: Optional[str] = None, implementation: Optional[str] = None) -> dict:
     """
     Summarise device utilisation from the map report: registers, SLICEs, LUT4s, I/O, block RAM and so on, each with used, total and percent.
@@ -1131,7 +1147,7 @@ def get_resource_usage(project_path: Optional[str] = None, implementation: Optio
     return _ok_dict("Resource usage.", **resources)
 
 
-@_tool
+@_tool(title="Read Diamond report file", annotations=READ_LOCAL)
 def read_report(file_path: str, offset: int = 0, max_chars: int = _MAX_REPORT_CHARS, tail: bool = False) -> dict:
     """
     Read a text report or log file (.par, .twr, .mrp, .srr, .srf, .log, .rpt, .pad, .htm, ...). Use list_reports to find files.
@@ -1172,7 +1188,7 @@ def read_report(file_path: str, offset: int = 0, max_chars: int = _MAX_REPORT_CH
 # ESCAPE HATCH
 # =============================================================================
 
-@_tool
+@_tool(title="Run Diamond Tcl command", annotations=RUN_ANYTHING)
 def run_tcl(command: str, timeout: Optional[float] = None) -> dict:
     """
     Run arbitrary Tcl in the live Diamond console (any prj_* command, or plain Tcl). Multi-line scripts are supported. Prefer the dedicated tools; use this for commands they do not cover. Commands containing 'prj_project close' are refused because they can crash Diamond; use close_project.
